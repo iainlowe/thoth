@@ -1,4 +1,4 @@
-# Plan — Daltu (MediaBackup Server)
+# Plan — Daltu (Thoth Server)
 
 Owner: Core Services
 Language/Runtime: Go 1.23+ (Linux-only target), systemd service
@@ -13,7 +13,7 @@ This plan is derived from daltu/plan.yaml and breaks work into actionable tasks 
   - [ ] Add Makefile targets: build, test, lint, package
 - [ ] Configuration system
   - [ ] Define config struct covering keys in plan.yaml (listen, auth, storage, replication, acks, database, quotas, housekeeping, observability, security)
-  - [ ] Load from file `/etc/mediabackup/server.yaml` with ENV overrides (prefix MBK_)
+  - [ ] Load from file `/etc/daltu/server.yaml` with ENV overrides (prefix DALTU_)
   - [ ] Add validation (required fields, sane defaults, enums)
   - [ ] Provide `--config` flag and dump-effective-config endpoint for debugging
 - [ ] Process management
@@ -101,7 +101,7 @@ This plan is derived from daltu/plan.yaml and breaks work into actionable tasks 
 ### Content-Addressed Storage (CAS)
 - [ ] Define path fanout (2 levels) and implement helper funcs
 - [ ] Implement atomic move from staging to CAS with fsync
-- [ ] Quarantine on mismatch: `/srv/mediabackup/quarantine/{hash}`
+- [ ] Quarantine on mismatch: `/srv/daltu/quarantine/{hash}`
 
 ### Database
 - [ ] Migration tool integration (goose or migrate)

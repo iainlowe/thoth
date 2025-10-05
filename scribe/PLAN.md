@@ -1,4 +1,4 @@
-# Plan — Scribe (MediaBackup Client)
+# Plan — Scribe (Thoth Client)
 
 Owner: Core Services
 Language/Runtime: Go 1.23+ (Linux, macOS, Windows), daemon/service with optional tray
@@ -11,8 +11,8 @@ This plan is derived from scribe/plan.yaml and expands milestones into actionabl
   - [ ] Configure builds for darwin/arm64, darwin/amd64, linux/amd64, windows/amd64
   - [ ] CI workflow for lint, test, and matrix builds
 - [ ] Config + local state
-  - [ ] Config loader `~/.mediabackup/config.yaml` with ENV overrides (MBK_)
-  - [ ] Initialize SQLite at `~/.mediabackup/catalog.db`
+  - [ ] Config loader `~/.thoth/scribe.yaml` with ENV overrides (SCRIBE_)
+  - [ ] Initialize SQLite at `~/.thoth/catalog.db`
   - [ ] Define schema tables: files, envelopes, uploads, events, devices
   - [ ] Migrations and vacuum schedule
 - [ ] Device enumeration and watcher
@@ -94,7 +94,7 @@ This plan is derived from scribe/plan.yaml and expands milestones into actionabl
 - [ ] Debounce and coalescing of events
 
 ### Spool
-- [ ] Path resolution `~/MediaBackup/spool`
+- [ ] Path resolution `~/.thoth/spool`
 - [ ] Disk space monitors; GC policy
 - [ ] Integrity: fsync after copy; verify hash
 

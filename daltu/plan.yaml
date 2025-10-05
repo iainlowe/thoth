@@ -1,0 +1,446 @@
+server_project:
+  name: "Daltu Server"
+  owner: "Thoth Core"
+  language: "Go (Linux-only target)"
+  runtime: "Go 1.23+, systemd service"
+  description: >
+    Receives media and metadata from Scribe/ Stylus clients, persists content with strong integrity guarantees,
+    manages replica counts (R), acknowledges durability to clients, exposes query/admin APIs,
+    and maintains auditability and observability.
+
+  non_goals:
+    - "End-user UI beyond a minimal admin dashboard"
+    - "Direct Photos library integrations (handled by iOS/macOS app)"
+    - "Cross-platform server support (Linux only for v1)"
+    - "Erasure coding (may come later; v1 uses replication)"
+
+  definitions:
+    object: "A single file (photo/video/audio) identified by content hash (BLAKE3) and optional client file_id"
+    replica: "A durable copy of an object in a distinct failure domain (disk/host/bucket) as configured"
+    R: "Target replica count required before acknowledging 'safe' to client"
+    envelope: "JSON payload with extracted file metadata (EXIF/ID3/etc) accompanying object upload"
+    CAS: "Content-Addressed Storage (path based on hash prefix fanout)"
+
+  milestones:
+    - id: M0
+      name: "Scaffold & Core Wiring"
+      exit_criteria:
+        - "Buildable Go module with lint/tests CI"
+        - "Process manager files (systemd unit) checked in"
+        - "Config system loads & validates"
+    - id: M1
+      name: "Ingest API (objects + envelopes) with local durability"
+      exit_criteria:
+        - "Chunked/resumable upload endpoint"
+        - "Local CAS layout with integrity checks"
+        - "Ack on fsync to staging and verified checksum"
+    - id: M2
+      name: "Replication Controller"
+      exit_criteria:
+        - "N replicas produced across configured backends"
+        - "Client-visible replica status endpoint returns accurate state"
+        - "Background repair & retry loop operational"
+    - id: M3
+      name: "Catalog & Queries"
+      exit_criteria:
+        - "SQL schema for objects, envelopes, replicas, events"
+        - "Indexed queries by time, device, tags, camera, etc."
+    - id: M4
+      name: "Ops, Security & Observability"
+      exit_criteria:
+        - "AuthN/Z, TLS, mTLS ready"
+        - "Metrics, traces, structured logs, alerts"
+        - "Backup/restore runbooks validated in fire-drill"
+
+  architecture:
+    process_model:
+      - "Single binary with modular packages: api, ingest, storage, replication, catalog, control, observability"
+      - "gRPC and/or HTTP/JSON APIs (choose one for v1; both behind same auth)"
+      - "Background workers via internal scheduler (work queues in DB)"
+    storage_backends:
+      - "Local filesystem (ext4/xfs) CAS root"
+      - "Optional S3-compatible bucket(s) for replicas"
+      - "Optional NFS/SMB paths (best-effort, durability depends on mount)"
+    durability_model:
+      - "Write to local staging, verify checksum, move to CAS, fsync"
+      - "Replication controller fans out to additional stores until R_met"
+      - "Ack policy selectable (ack_on_local, ack_on_R_met)"
+    integrity:
+      - "Per-chunk BLAKE3 + whole-object BLAKE3"
+      - "Size recorded; verify at each hop; redact on mismatch & quarantine"
+    idempotency:
+      - "Idempotency-Key header + content-hash → dedupe writes"
+      - "Resumable upload tokens to continue interrupted transfers"
+    multi_tenancy:
+      - "Optional tenant_id field; scoped quotas and auth policies"
+
+  configuration:
+  file: "/etc/daltu/server.yaml"
+  env_prefix: "DALTU_"
+    keys:
+      listen:
+        addr: "0.0.0.0:8443"
+        protocol: "https"
+      auth:
+        mode: "mtls|token"
+        token_issuers: ["https://auth.example"]
+  mtls_ca_file: "/etc/daltu/ca.pem"
+      storage:
+  cas_root: "/srv/daltu/cas"
+  staging_root: "/srv/daltu/staging"
+        fanout: 2   # hash prefix directory levels
+      replication:
+        targets:
+          - type: "local"
+            path: "/srv/daltu/cas"
+            failure_domain: "hostA-disk1"
+          - type: "s3"
+            bucket: "daltu-replica-1"
+            region: "us-east-1"
+            failure_domain: "aws-us-east-1"
+        max_inflight: 8
+        verify_after_write: true
+      acks:
+        policy: "ack_on_local"   # or "ack_on_R_met"
+      database:
+        dsn: "postgres://mbk@localhost/mbk?sslmode=disable"
+        pool_size: 30
+      quotas:
+        per_tenant_bytes: 1099511627776  # 1 TiB default
+      housekeeping:
+        gc_interval: "15m"
+        verify_interval: "24h"
+        orphan_reap_after: "7d"
+      observability:
+        logs: "json"
+        prometheus_addr: ":9100"
+        tracing: "otlp"
+      security:
+  tls_cert_file: "/etc/daltu/tls.crt"
+  tls_key_file: "/etc/daltu/tls.key"
+        require_client_version: ">=1.0.0"
+
+  apis:
+    # Choose HTTP/JSON or gRPC; shapes provided in JSON for clarity
+    ingest:
+      - name: "POST /v1/objects/reserve"
+        purpose: "Start or resume an object upload; returns upload_id and chunk parameters"
+        request:
+          json:
+            tenant_id: "string"
+            client_id: "uuid"
+            file_name: "string"
+            file_size: "int64"
+            content_hash: "blake3-hex-64"
+            idempotency_key: "string"
+            r_requested: "int"
+            envelope: "json (EXIF/ID3 etc.)"
+        response:
+          json:
+            upload_id: "uuid"
+            chunk_size: "int32"
+            accepted: true
+            already_present: "bool"
+            replicas_current: "int"
+      - name: "PUT /v1/objects/{upload_id}/chunks/{n}"
+        purpose: "Upload chunk n (0-based); server verifies per-chunk hash"
+        headers:
+          Content-Range: "bytes start-end/total"
+        response:
+          json:
+            received: true
+            next_chunk: "int"
+      - name: "POST /v1/objects/{upload_id}/commit"
+        purpose: "Finalize upload, verify whole-object checksum, move to CAS"
+        response:
+          json:
+            object_id: "blake3-hex-64"
+            replicas_current: "int"
+            ack_policy_state: "local_persisted|r_met"
+      - name: "GET /v1/objects/{content_hash}/status"
+        purpose: "Report replica counts & locations for client R checks"
+        response:
+          json:
+            replicas:
+              - target: "local|s3|nfs"
+                failure_domain: "string"
+                verified_at: "rfc3339"
+            replicas_current: "int"
+            r_met: "bool"
+    catalog:
+      - name: "GET /v1/search"
+        purpose: "Query by envelope fields/time/device/labels"
+        params:
+          q: "string (dsl or simple)"
+          tenant_id: "string"
+          limit: 100
+          page_token: "string"
+        response:
+          json:
+            results: ["object_summary..."]
+    control_plane:
+      - name: "GET /v1/healthz"
+      - name: "GET /v1/metrics"   # Prometheus
+      - name: "POST /v1/admin/reindex"
+      - name: "POST /v1/admin/verify/{content_hash}"
+      - name: "POST /v1/admin/replicate/{content_hash}"
+      - name: "GET /v1/tenants/{id}/quota"
+
+  database_schema:
+    engine: "PostgreSQL 14+ (or SQLite for dev)"
+    tables:
+      objects:
+        - content_hash (pk)
+        - tenant_id
+        - size_bytes
+        - mime_type
+        - created_at
+        - committed_at
+        - envelope_sha256
+        - first_seen_client_id
+      envelopes:
+        - envelope_id (pk)
+        - content_hash (fk objects)
+        - raw_json (jsonb)
+        - captured_at
+        - device_id
+        - camera_make
+        - camera_model
+        - shot_time
+        - latitude
+        - longitude
+        - tags (text[])
+        - index: gin(raw_json)
+      replicas:
+        - content_hash (fk objects)
+        - target (enum: local|s3|nfs|custom)
+        - location (text)      # path or URL
+        - failure_domain (text)
+        - verified_at (timestamptz)
+        - primary key (content_hash, target, location)
+      uploads:
+        - upload_id (pk)
+        - tenant_id
+        - client_id
+        - content_hash
+        - idempotency_key
+        - chunk_size
+        - total_size
+        - received_bytes
+        - state (enum: reserved|in_progress|committed|aborted|expired)
+        - updated_at
+        - index (content_hash, client_id)
+      events:
+        - event_id (pk)
+        - ts
+        - tenant_id
+        - type (enum)
+        - content_hash
+        - details (jsonb)
+        - index (ts DESC)
+    views:
+      - name: "object_replica_status"
+        definition: "content_hash, replicas_current, r_met boolean"
+
+  storage_layout:
+    cas:
+      hash_algo: "blake3"
+      fanout: 2
+      path_template: "{cas_root}/{h0}{h1}/{h2}{h3}/{hash}"
+      staging: "{staging_root}/{upload_id}/{chunk_idx}"
+  quarantine: "/srv/daltu/quarantine/{hash}"
+    metadata:
+      envelope_files: "optional sidecar {hash}.envelope.json for rapid recovery"
+
+  replication:
+    controller:
+      responsibilities:
+        - "Watch objects with replicas_current < R_target"
+        - "Schedule copy jobs across distinct failure domains"
+        - "Verify checksum at destination; mark replica verified"
+        - "Periodic audit & healing of missing/rotten replicas"
+      strategies:
+        - "Parallelism bounded by max_inflight"
+        - "Backoff on failing targets; circuit breaker per target"
+        - "Prefer diversity across failure domains"
+      ack_paths:
+        - "If acks.policy=ack_on_R_met, emit Event: R_MET for client polling"
+    targets:
+      local_fs:
+        - "Hard-link optimization within CAS if same device"
+      s3:
+        - "Multipart upload; SSE-KMS optional; ETag vs BLAKE3 reconcile"
+      nfs:
+        - "fsync, verify-after-write; treat as lower-trust target"
+
+  security:
+    transport:
+      - "TLS 1.3; strong ciphers"
+      - "mTLS option for client->server"
+    authN:
+      - "OIDC bearer tokens OR API keys per device"
+    authZ:
+      - "Tenant-scoped claims; per-tenant quotas & R limits"
+    at_rest:
+      - "Optional LUKS for local disks, SSE for S3"
+    privacy:
+      - "Envelope PII redaction rules (faces, GPS toggle by policy)"
+    audit:
+      - "Immutable event log stream (append-only topic/file)"
+
+  reliability_and_backpressure:
+    - "Global and per-tenant quotas; 429/Retry-After with jitter"
+    - "Upload reservations with TTL; reclaim orphaned state"
+    - "Disk space guardians: low-water marks halt new commits"
+    - "Graceful degradation: accept envelopes-only when storage constrained"
+    - "Idempotent uploads; resume at chunk N"
+
+  housekeeping_jobs:
+    - name: "GC_Staging"
+      cadence: "15m"
+      action: "Purge expired/aborted uploads"
+    - name: "Verify_Replicas"
+      cadence: "24h"
+      action: "Rehash a sample or full verify on schedule"
+    - name: "Heal_Replicas"
+      cadence: "1h"
+      action: "Recreate missing/unverified replicas"
+    - name: "Reindex_Catalog"
+      cadence: "6h"
+      action: "Refresh search indexes as needed"
+    - name: "Quota_Enforcement"
+      cadence: "10m"
+      action: "Flag tenants near or over quota"
+
+  observability:
+    logging:
+      - "Structured JSON; request_id, tenant_id, content_hash"
+      - "Sensitive fields redacted"
+    metrics:
+      counters:
+        - "ingest_bytes_total"
+        - "objects_committed_total"
+        - "replicas_verified_total"
+        - "ingest_failures_total"
+      gauges:
+        - "replication_backlog_objects"
+        - "disk_free_bytes"
+      histograms:
+        - "upload_latency_seconds"
+        - "replication_duration_seconds"
+    tracing:
+      - "OTLP spans across ingest → storage → replication"
+    alerts:
+      - "Disk < 15% free"
+      - "Replication backlog > threshold"
+      - "R not met for > X minutes"
+      - "Checksum mismatch rate > Y per hour"
+
+  testing_plan:
+    unit:
+      - "Chunk hasher, CAS paths, checksum validators"
+      - "Envelope parser/normalizer"
+    integration:
+      - "End-to-end upload → commit → replicate → verify"
+      - "Resume from chunk N after failure"
+      - "Idempotency-key retries"
+    chaos:
+      - "Kill replica targets mid-upload; ensure recovery"
+      - "Corrupt a replica; verify quarantine & heal"
+    performance:
+      - "Sustained ingest at target MB/s with N clients"
+      - "Latency under load; backpressure behavior"
+    security:
+      - "mTLS handshake tests; token validation"
+      - "AuthZ scope checks per tenant"
+
+  deployment:
+    packaging:
+      - "Static Go binary + Debian package"
+    service:
+      - systemd_unit: |
+          [Unit]
+          Description=Daltu Server (Thoth)
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          ExecStart=/usr/local/bin/daltu -config /etc/daltu/server.yaml
+          User=daltu
+          Group=daltu
+          Restart=on-failure
+          RestartSec=5s
+          LimitNOFILE=1048576
+          Environment=GODEBUG=madvdontneed=1
+
+          [Install]
+          WantedBy=multi-user.target
+    rollout:
+      - "Blue/green on host pair or canary with traffic split at LB"
+      - "Schema migrations via goose prior to binary rollout"
+    backups:
+      - "DB nightly snapshot + WAL shipping"
+      - "CAS rsync snapshot to cold storage"
+
+  data_model_notes:
+    envelope_normalization:
+      - "Map common EXIF/ID3 fields to first-class columns for filtering"
+      - "Store full raw JSON for forward-compat"
+    deduplication:
+      - "Primary key on content_hash avoids duplicate storage"
+      - "Reference counts by tenant/file occurrence (future v1.1)"
+
+  client_contracts:
+    r_status_polling:
+      - "Client polls /objects/{hash}/status until r_met==true when configured"
+    acks:
+      - "Server returns ack state honoring acks.policy"
+    catalogs:
+      - "Server persists envelope at reserve-time for early visibility"
+    errors:
+      - "429 with Retry-After; 5xx with opaque retryable code; deterministic 4xx for client bugs"
+
+  risks_and_mitigations:
+    - risk: "Local disk fills during bursts"
+      mitigation: "Low-water mark, reject reserve, envelopes-only mode, alert"
+    - risk: "Replica target outage"
+      mitigation: "Queue jobs, exponential backoff, circuit breaker"
+    - risk: "Checksum collisions or mismatches"
+      mitigation: "BLAKE3 whole-object + size; quarantine and manual review"
+    - risk: "API abuse"
+      mitigation: "mTLS/Token auth, per-tenant rate limits and quotas"
+    - risk: "Silent NFS flakiness"
+      mitigation: "Treat NFS as best-effort; prefer S3 or local verified replicas"
+
+  v1_done_criteria:
+    - "Clients can ingest at scale, resume on failure, and poll R until met"
+    - "Server enforces integrity, stores envelopes, and manages replicas"
+    - "Operators have metrics, logs, traces, and runbooks"
+    - "Disaster drill proves restore from replicas and DB snapshots"
+
+  backlog_next:
+    - "Erasure coding (Reed–Solomon) for space efficiency"
+    - "WORM retention policies and legal hold"
+    - "S3 Glacier/Deep Archive tiering"
+    - "Admin web UI"
+    - "Geo-replication policies aware of data residency"
+	•	“Erasure coding (Reed–Solomon) for space efficiency”
+	•	“WORM retention policies and legal hold”
+	•	“S3 Glacier/Deep Archive tiering”
+	•	“Admin web UI”
+	•	“Geo-replication policies aware of data residency”
+	•	“Lifecycle policies (TTL/ILM rules) for auto-tiering and purge”
+	•	“Hash agility: migrate/re-hash objects (e.g., BLAKE3 → SHA-256) without re-upload”
+	•	“End-to-end encryption with KMS/HSM and optional client-held keys”
+	•	“Pluggable metadata extraction pipeline (HEIC/ProRAW/video codecs) with workers”
+	•	“Near-duplicate detection via perceptual hashes (pHash/aHash/DCT)”
+	•	“Restore/export tooling (query-based partial restores, tar/zstd bundles)”
+	•	“Horizontal sharding/partitioning of catalog DB; read replicas”
+	•	“Event streaming (Kafka/NATS/Webhooks) for downstream workflows”
+	•	“Policy engine (OPA/Rego) for per-tenant R, residency, encryption”
+	•	“Cross-target consistency checks (Merkle trees) and quorum acks”
+	•	“Offline ingestion bundles (“sneakernet mode”) with signed manifests”
+	•	“Bandwidth/QoS scheduler with windows and per-tenant caps”
+	•	“Native tus.io/resumable mobile ingest endpoints and background transfers”
+	•	“Periodic data scrubbing/bit-rot detection with adaptive scheduling”
+	•	“S3-compatible facade over CAS for broader ecosystem compatibility”

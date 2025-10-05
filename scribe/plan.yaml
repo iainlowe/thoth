@@ -1,0 +1,227 @@
+client_project:
+  name: "Scribe Client"
+  owner: "Thoth Core"
+  language: "Go (cross-compiled for Linux, macOS, Windows)"
+  runtime: "Go 1.23+, runs as background daemon/service"
+  description: >
+    Cross-platform binary that monitors removable or designated storage sources
+    (e.g. SD cards, USB drives, Photos library folders) and performs resilient,
+    incremental, and verifiable uploads of media objects to one or more
+  Daltu servers. Handles discovery, caching, metadata extraction,
+    replication verification, and deferred deletion logic.
+
+  non_goals:
+    - "Long-term archival; that’s handled by the server"
+    - "Cloud-specific integrations beyond upload protocols"
+    - "Photo editing or file management beyond backup scope"
+    - "UI-heavy behavior (minimal tray/CLI front-end only)"
+
+  definitions:
+    device: "Any mountable volume, SD card, or network share recognized by the OS"
+    spool: "Local staging/cache area used for temporary copies or partial uploads"
+    envelope: "Metadata JSON extracted per file (EXIF, ID3, etc.)"
+    R: "Desired replica count acknowledged by the server before source cleanup"
+
+  milestones:
+    - id: C0
+      name: "Scaffold & Core Loop"
+      exit_criteria:
+        - "Cross-platform build targets operational"
+        - "Config file and local SQLite initialized"
+        - "Device enumeration and event watcher functional"
+    - id: C1
+      name: "Ingestion & Spooling"
+      exit_criteria:
+        - "Detects media folders (DCIM, Photos, Movies)"
+        - "Implements fast-copy to local spool with checksum"
+        - "Supports smallest-file-first and JPEG-before-RAW heuristics"
+    - id: C2
+      name: "Upload Engine"
+      exit_criteria:
+        - "Chunked/resumable uploads to server"
+        - "Retry/backoff logic with persistence across restarts"
+        - "Bandwidth throttling and pause/resume support"
+    - id: C3
+      name: "Metadata & Catalog"
+      exit_criteria:
+        - "EXIF/ID3 extraction pipeline"
+        - "Local searchable SQLite catalog"
+        - "Delta sync with server for verified uploads"
+    - id: C4
+      name: "Replica Confirmation & Cleanup"
+      exit_criteria:
+        - "Polls server for replica counts"
+        - "Implements R-policy logic (min 2)"
+        - "Safe deletion + metadata marker on device"
+    - id: C5
+      name: "Observability & Packaging"
+      exit_criteria:
+        - "Structured logs, metrics, and trace spans"
+        - "System tray icon (macOS/Windows) or CLI status (Linux)"
+        - "Installers and service manifests complete"
+
+  architecture:
+    process_model:
+      - "Single binary with sub-packages: watcher, spooler, uploader, catalog, monitor"
+      - "Background daemon with optional tray/CLI controller"
+      - "Persistent SQLite store under user data directory"
+    cross_platform:
+      - "Linux: systemd service"
+      - "macOS: launchd agent + tray"
+      - "Windows: background service + tray"
+    upload_protocol:
+      - "HTTP/JSON or gRPC matching server spec"
+      - "mTLS or token-based auth"
+    spool_policy:
+      - "Fast copy first, verify checksums, then delete originals post-R"
+      - "Adaptive spool space management (percent-free threshold)"
+    deletion_policy:
+      - "Only after R_met=true AND server ack + local metadata marker write"
+    metadata_pipeline:
+      - "EXIF via exiftool/libexif bindings"
+      - "Audio/video tags via ffprobe bindings"
+      - "Hashing with BLAKE3 streaming API"
+
+  configuration:
+  file: "~/.thoth/scribe.yaml"
+  env_prefix: "SCRIBE_"
+    keys:
+      server:
+        url: "https://backup.local:8443"
+        auth_mode: "mtls|token"
+  client_cert: "~/.thoth/client.crt"
+  client_key: "~/.thoth/client.key"
+  ca_cert: "~/.thoth/ca.pem"
+      spool:
+  path: "~/.thoth/spool"
+        max_bytes: 21474836480  # 20 GiB default
+        low_water_mark: 0.15
+      upload:
+        concurrent_files: 4
+        chunk_size: 8388608
+        retry_backoff: "1s..5m"
+        max_retries: 10
+        ack_policy: "ack_on_local"
+      device_watch:
+        include_patterns: ["DCIM", "Movies", "Pictures"]
+        exclude_patterns: ["tmp", "cache"]
+        rescan_interval: "5m"
+      r_policy:
+        min_replicas: 2
+        delete_after_r_met: true
+      catalog:
+  db_path: "~/.thoth/catalog.db"
+        vacuum_interval: "24h"
+      telemetry:
+        log_format: "json"
+        prometheus_port: 9191
+        tracing: "otlp"
+      notifications:
+        mode: "tray|os"
+        level: "info|warn|error"
+
+  local_schema:
+    tables:
+      files:
+        - file_id (pk)
+        - device_path
+        - content_hash
+        - size_bytes
+        - mime_type
+        - added_at
+        - spool_path
+        - upload_state (enum)
+        - last_error
+      envelopes:
+        - envelope_id (pk)
+        - file_id (fk)
+        - raw_json (json)
+        - extracted_at
+      uploads:
+        - upload_id (pk)
+        - file_id (fk)
+        - server_hash
+        - bytes_sent
+        - state (enum)
+        - retries
+        - last_ack_state
+        - updated_at
+      events:
+        - event_id (pk)
+        - ts
+        - type
+        - message
+      devices:
+        - mount_id (pk)
+        - path
+        - fs_type
+        - total_bytes
+        - free_bytes
+        - last_seen
+        - metadata_file_present (bool)
+
+  observability:
+    logging:
+      - "JSON structured logs; rotate daily"
+    metrics:
+      counters:
+        - "files_discovered_total"
+        - "uploads_started_total"
+        - "uploads_failed_total"
+        - "files_deleted_total"
+      gauges:
+        - "spool_bytes_used"
+        - "active_uploads"
+      histograms:
+        - "upload_duration_seconds"
+    tracing:
+      - "Client spans propagate to server via traceparent"
+    notifications:
+      - "OS-level notifications on completion/error"
+      - "CLI and tray status summaries"
+
+  testing_plan:
+    unit:
+      - "Hasher, EXIF parser, retry logic"
+    integration:
+      - "Device mount simulation"
+      - "End-to-end upload to local test server"
+      - "Resume after reboot"
+    performance:
+      - "Bulk ingestion 10 000-file SD card"
+      - "Network drop and resume scenarios"
+    security:
+      - "mTLS handshake validation"
+      - "Token expiry and rotation tests"
+
+  packaging:
+    linux:
+      - "Deb/RPM package + systemd unit"
+    macos:
+      - "Signed .app bundle + LaunchAgent plist + tray icon"
+    windows:
+      - "MSI installer + service registration + tray icon"
+    updater:
+      - "Self-update channel with signature verification"
+
+  backlog_next:
+    - "Delta-sync: detect renamed/moved files without re-upload"
+    - "Compression before upload for large videos"
+    - "LAN peer-to-peer sharing for same-household backups"
+    - "Selective album import from Photos app"
+    - "Scheduled backup windows (e.g., overnight only)"
+    - "Energy-aware operation (pause on battery)"
+    - "Offline queue for disconnected laptops"
+    - "End-to-end encryption with local key escrow"
+    - "Per-device policies (different R or compression rules)"
+    - "Smart duplicate detection across devices"
+    - "iOS shortcut integration for manual backup trigger"
+    - "CLI subcommands for diagnostics and repair"
+    - "Multi-server round-robin or geo-failover uploads"
+    - "User analytics dashboard (bytes uploaded, replicas met)"
+    - "Local HTTP UI for non-interactive environments"
+    - "Adaptive concurrency based on network bandwidth"
+    - "Server discovery via mDNS/zeroconf"
+    - "Encrypted external drive spool option"
+    - "Agentless mode (trigger via API instead of watcher)"
+    - "Photo/video preview generation in tray UI"
