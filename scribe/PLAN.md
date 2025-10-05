@@ -5,7 +5,7 @@ Language/Runtime: Go 1.23+ (Linux, macOS, Windows), daemon/service with optional
 
 This plan is derived from scribe/plan.yaml and expands milestones into actionable, nested tasks with checkboxes. Subtasks are detailed enough to start implementation.
 
-## C0 — Scaffold & Core Loop
+## M0 — Scaffold & Core Loop
 
 - [ ] Cross-platform builds
   - [ ] Configure builds for darwin/arm64, darwin/amd64, linux/amd64, windows/amd64
@@ -21,9 +21,9 @@ This plan is derived from scribe/plan.yaml and expands milestones into actionabl
   - [ ] Periodic rescan (5m) and debounce logic
 - [ ] Daemon lifecycle
   - [ ] Graceful shutdown; signal handling
-  - [ ] Tray/CLI stub hooks (to be filled in C5)
+  - [ ] Tray/CLI stub hooks (to be filled in M5)
 
-## C1 — Ingestion & Spooling
+## M1 — Ingestion & Spooling
 
 - [ ] Media discovery
   - [ ] Detect DCIM/Photos/Movies folders on mounted devices
@@ -36,7 +36,7 @@ This plan is derived from scribe/plan.yaml and expands milestones into actionabl
   - [ ] JPEG-before-RAW ordering
   - [ ] Smallest-file-first when space constrained
 
-## C2 — Upload Engine
+## M2 — Upload Engine
 
 - [ ] Protocol client
   - [ ] Reserve: POST `/v1/objects/reserve` (tenant_id, file_name, size, hash)
@@ -49,7 +49,7 @@ This plan is derived from scribe/plan.yaml and expands milestones into actionabl
 - [ ] Auth
   - [ ] mTLS client certs or token auth based on config
 
-## C3 — Metadata & Catalog
+## M3 — Metadata & Catalog
 
 - [ ] Extraction pipeline
   - [ ] EXIF via exiftool/libexif bindings
@@ -59,7 +59,7 @@ This plan is derived from scribe/plan.yaml and expands milestones into actionabl
   - [ ] Index and search by time/device/tags
   - [ ] Sync with server post-commit for verified uploads
 
-## C4 — Replica Confirmation & Cleanup
+## M4 — Replica Confirmation & Cleanup
 
 - [ ] Poll status
   - [ ] GET `/v1/objects/{content_hash}/status` periodically until `r_met`
@@ -69,7 +69,7 @@ This plan is derived from scribe/plan.yaml and expands milestones into actionabl
   - [ ] Delete original only after `r_met=true` + ack state
   - [ ] Audit log event and update local catalog state
 
-## C5 — Observability & Packaging
+## M5 — Observability & Packaging
 
 - [ ] Logs/metrics/traces
   - [ ] Structured JSON logs; rotate daily
@@ -86,7 +86,7 @@ This plan is derived from scribe/plan.yaml and expands milestones into actionabl
 
 ---
 
-## Subsystem Task Breakdown
+## Subsystems
 
 ### Watcher
 - [ ] OS integration to detect device mount/unmount
@@ -123,17 +123,28 @@ This plan is derived from scribe/plan.yaml and expands milestones into actionabl
 - [ ] Histograms: upload_duration_seconds
 - [ ] Notifications: OS/tray and CLI summaries
 
-### Testing
+## Testing
 - [ ] Unit: hasher, EXIF parser, retry logic
 - [ ] Integration: device mount simulation; end-to-end with local server
 - [ ] Performance: 10k-file SD ingest; network drop/resume
 - [ ] Security: mTLS handshake; token expiry/rotation
 
-### Packaging
+## Packaging & Deployment
 - [ ] Linux deb/rpm; systemd unit + config
 - [ ] macOS app and LaunchAgent; hardened runtime and signing
 - [ ] Windows MSI and service; code signing
 - [ ] Auto-updater with signed channel
+
+## Risks & Mitigations
+- [ ] Spool exhaustion under burst; enforce low-water marks and eviction
+- [ ] Intermittent connectivity; exponential backoff and resume
+- [ ] Metadata extraction failures; quarantine and retry policies
+
+## Definition of Done (v1)
+- [ ] Cross-platform daemon runs reliably with configurable ingestion
+- [ ] Verified uploads with server; R-policy cleanup works safely
+- [ ] Usable logs/metrics/traces and minimal UI/tray/CLI surfaces
+- [ ] Installers/manifests verified on all platforms
 
 ## Backlog Next (post-v1)
 - [ ] Delta-sync for renames/moves

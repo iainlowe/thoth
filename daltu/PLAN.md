@@ -96,7 +96,7 @@ This plan is derived from daltu/plan.yaml and breaks work into actionable tasks 
 
 ---
 
-## Subsystem Task Breakdown
+## Subsystems
 
 ### Content-Addressed Storage (CAS)
 - [ ] Define path fanout (2 levels) and implement helper funcs
@@ -127,19 +127,19 @@ This plan is derived from daltu/plan.yaml and breaks work into actionable tasks 
 - [ ] Reindex_Catalog (6h)
 - [ ] Quota_Enforcement (10m)
 
-### Testing
+## Testing
 - [ ] Unit: chunk hasher, CAS paths, validators
 - [ ] Integration: reserve→chunks→commit→replicate→verify
 - [ ] Chaos: target outages, corrupt replica, recovery paths
 - [ ] Performance: sustained ingest with N clients
 - [ ] Security: mTLS, token validation, authZ scopes
 
-### Deployment & Packaging
+## Packaging & Deployment
 - [ ] Static binary build and Debian package
 - [ ] systemd unit install script; env files; limits
 - [ ] Blue/green or canary rollout scripts
 
-### Risks & Mitigations
+## Risks & Mitigations
 - [ ] Low disk watermarks halt commits; envelopes-only mode
 - [ ] Backpressure and retries on target outage
 - [ ] Quarantine mismatches; manual review tooling
